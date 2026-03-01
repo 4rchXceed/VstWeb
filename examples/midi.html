@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VstWeb Example - Load MIDI</title>
+    <script src="../lib/jszip.min.js"></script>
+</head>
+
+<body>
+    <div>
+        <label for="loadVst">Load VST Plugin ZIP:</label>
+        <input type="file" id="loadVst" accept=".zip" />
+        <input type="text" id="vstPath" placeholder="Path to VST .dll plugin (inside zip file)" />
+        <label for="loadMidi">Load MIDI File:</label>
+        <input type="file" id="loadMidi" accept=".mid" />
+        <button id="process">Process</button>
+        <div id="preview"></div>
+    </div>
+    <script type="module" src="midi.js"></script>
+</body>
+
+</html>

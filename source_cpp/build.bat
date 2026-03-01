@@ -1,0 +1,1 @@
+g++ main.cpp -o main.exe -m32 -static -I. -Wall -lole32 -loleaut32 -lcomdlg32

@@ -1,0 +1,6 @@
+I am not allowed to share aeffect.h and aeffectx.h.
+Download them from:https://archive.org/download/VST2SDK/vst_sdk2_4_rev2.zip/vstsdk2.4%2Fpluginterfaces%2Fvst2.x%2Faeffectx.h
+And: https://archive.org/download/VST2SDK/vst_sdk2_4_rev2.zip/vstsdk2.4%2Fpluginterfaces%2Fvst2.x%2Faeffect.h
+
+Base of main.cpp :
+https://gist.github.com/t-mat/206e3e7dfc3f89421bc1

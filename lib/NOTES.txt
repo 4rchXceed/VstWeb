@@ -1,0 +1,2 @@
+MIDI*.js : modified for the web, comes from: https://github.com/nfroidure/midifile
+jszip.min.js : Comes from JSZip

@@ -1,0 +1,7 @@
+bin/
+build/
+!bin/.keep
+!build/.keep
+nextcloud-share/
+states/
+!states/.keep

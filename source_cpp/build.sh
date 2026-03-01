@@ -1,0 +1,1 @@
+i686-w64-mingw32-g++ main.cpp -m32 -static -I. -I/usr/local/include -L/usr/i686-w64-mingw32/lib -Wall -o main.exe -lole32 -loleaut32
