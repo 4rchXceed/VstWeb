@@ -1,1 +1,1 @@
-g++ main.cpp -o main.exe -m32 -static -I. -Wall -lole32 -loleaut32 -lcomdlg32
+g++.exe main.cpp -m32 -static -I. -I/usr/local/include -L/usr/i686-w64-mingw32/lib -Wall -o main.exe -lole32 -loleaut32 -lws2_32

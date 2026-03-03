@@ -23,6 +23,7 @@
 #define UNICODE
 #include <process.h>
 #include <mmdeviceapi.h>
+#include <winsock2.h>
 
 #define UNICODE
 
@@ -44,6 +45,10 @@
 #pragma warning(pop)
 
 bool isProcessing = false;
+
+#define STATIC_ADRESS "192.168.86.100"
+#define PORT_AUDIO_SEND 12345
+#define PORT_NOTE_RECEIVE 12346
 
 #define ASSERT_THROW(c, e)           \
     if (!(c))                        \
@@ -383,6 +388,44 @@ struct SocketAudioSender
         : refillFunc(refillFunc)
     {
 
+        serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (serverSocket == INVALID_SOCKET)
+        {
+            std::cout << "Error at socket(): " << WSAGetLastError() << std::endl;
+            return;
+        }
+        sockaddr_in service;
+        service.sin_family = AF_INET;
+        service.sin_addr.s_addr = inet_addr(STATIC_ADRESS);
+        service.sin_port = htons(PORT_AUDIO_SEND);
+        if (bind(serverSocket, reinterpret_cast<SOCKADDR *>(&service), sizeof(service)) == SOCKET_ERROR)
+        {
+            std::cout << "bind() failed: " << WSAGetLastError() << std::endl;
+            closesocket(serverSocket);
+            return;
+        }
+        if (listen(serverSocket, 1) == SOCKET_ERROR)
+        {
+            std::cout << "listen(): Error listening on socket: " << WSAGetLastError() << std::endl;
+        }
+        std::ofstream startedOut(".started");
+        if (startedOut)
+        {
+            startedOut << "OK" << std::endl;
+        }
+        startedOut.close();
+        std::cout << "Waiting for connection... (SAS)" << std::endl;
+        acceptSocket = accept(serverSocket, nullptr, nullptr);
+
+        if (acceptSocket == INVALID_SOCKET)
+        {
+            std::cout << "accept failed: " << WSAGetLastError() << std::endl;
+            closesocket(serverSocket);
+            return;
+        }
+
+        std::cout << "Connected!" << std::endl;
+
         // Setup WAVEFORMATEX
         mixFormat.wFormatTag = 0x0003;
         mixFormat.nChannels = 2;
@@ -395,17 +438,12 @@ struct SocketAudioSender
         running = true;
         audioThread = std::thread(&SocketAudioSender::threadFunc, this);
     }
-
     ~SocketAudioSender()
     {
         running = false;
         if (audioThread.joinable())
         {
             audioThread.join();
-        }
-        if (outputFile.is_open())
-        {
-            outputFile.close();
         }
     }
 
@@ -419,36 +457,31 @@ private:
         {
             if (refillFunc(buffer.data(), framesPerBuffer, &mixFormat))
             {
-                if (outputFile.is_open() && !isProcessing)
+                int bytesToSend = static_cast<int>(framesPerBuffer * mixFormat.nChannels * sizeof(float));
+                int bytesSent = 0;
+                while (bytesSent < bytesToSend)
                 {
-                    outputFile.close();
-                }
-                if (!outputFile.is_open() && isProcessing)
-                {
-                    outputFile.open("audio_output.raw", std::ios::binary);
-                    if (!outputFile)
+                    int result = send(acceptSocket, reinterpret_cast<const char *>(buffer.data()) + bytesSent, bytesToSend - bytesSent, 0);
+                    if (result == SOCKET_ERROR)
                     {
-                        std::cerr << "Error: Failed to open audio_output.raw for writing." << std::endl;
+                        std::cout << "send failed: " << WSAGetLastError() << std::endl;
+                        closesocket(acceptSocket);
+                        WSACleanup();
                         return;
                     }
-                }
-                if (isProcessing)
-                {
-                    // Write audio data to file
-                    outputFile.write(reinterpret_cast<const char *>(buffer.data()),
-                                     buffer.size() * sizeof(float));
-                    outputFile.flush();
+                    bytesSent += result;
                 }
             }
-            std::this_thread::sleep_for(std::chrono::microseconds(23220));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
-    std::ofstream outputFile;
     RefillFunc refillFunc;
     WAVEFORMATEX mixFormat{};
     std::atomic<bool> running{false};
     std::thread audioThread;
+    SOCKET acceptSocket;
+    SOCKET serverSocket;
 };
 
 // struct Wasapi
@@ -634,81 +667,104 @@ void mainLoop(const char *dllFilename)
 
     std::cout << "Started." << std::endl;
 
-    std::ofstream outFile(".started");
-    outFile << "OK" << std::endl;
-    outFile.close();
-
     bool run = true;
-    char *fname = "notes.txt";
+
+    SOCKET serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (serverSocket == INVALID_SOCKET)
+    {
+        std::cout << "Error at socket(): " << WSAGetLastError() << std::endl;
+        return;
+    }
+
+    std::cout << "Waiting for connection..." << std::endl;
+    sockaddr_in service;
+    service.sin_family = AF_INET;
+    service.sin_addr.s_addr = inet_addr(STATIC_ADRESS);
+    service.sin_port = htons(PORT_NOTE_RECEIVE);
+    if (bind(serverSocket, reinterpret_cast<SOCKADDR *>(&service), sizeof(service)) == SOCKET_ERROR)
+    {
+        std::cout << "bind() failed: " << WSAGetLastError() << std::endl;
+        closesocket(serverSocket);
+        return;
+    }
+
+    std::cout << "Listening on " << STATIC_ADRESS << ":" << PORT_NOTE_RECEIVE << "..." << std::endl;
+
+    if (listen(serverSocket, 1) == SOCKET_ERROR)
+    {
+        std::cout << "listen(): Error listening on socket: " << WSAGetLastError() << std::endl;
+    }
+
+    std::cout << "Waiting for connection..." << std::endl;
+
+    SOCKET acceptSocket = INVALID_SOCKET;
+    std::ofstream finishedStarted(".finished_start");
+    if (finishedStarted)
+    {
+        finishedStarted << "OK" << std::endl;
+    }
+    finishedStarted.close();
+
+    std::cout << "Startup complete!" << std::endl;
+
+    acceptSocket = accept(serverSocket, nullptr, nullptr);
+
+    if (acceptSocket == INVALID_SOCKET)
+    {
+        std::cout << "accept failed: " << WSAGetLastError() << std::endl;
+        closesocket(serverSocket);
+        return;
+    }
+
+    std::string recvAccum;
+    recvAccum.reserve(2048);
+
     while (run)
     {
-        // notes.txt example content :
-        //  74:1100
-        //  59:1100
-        //  !:1000
-        //  74:0000
-        //  59:0000
-        std::ifstream openedFile(fname);
-        if (openedFile.is_open())
-        {
-            std::remove("pipe.bin");
-            isProcessing = true;
-            std::string line;
-            while (std::getline(openedFile, line))
-            {
-                if (line.find(':') != std::string::npos)
-                {
-                    const std::string key = line.substr(0, line.find(':'));
-                    if (line[0] == '!') // '!' - special command for wait
-                    {                   // wait
-                        std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(line.substr(2).c_str())));
-                        continue;
-                    }
-                    const char onOff = line[line.find(':') + 1];
-                    const char *velocity = line.substr(line.find(":") + 2).c_str();
-                    const int vel = std::atoi(velocity);
-                    const int midiNote = std::atoi(key.c_str());
-                    const bool on = onOff == '1';
-                    vstPlugin.sendMidiNote(0, midiNote, on, vel);
-                }
-            }
-            openedFile.close();
-            // Move audio_output.raw to a new file (pipe.bin)
-            isProcessing = false;
-            std::this_thread::sleep_for(std::chrono::microseconds(23220));
-            // BTW: Prints are very slow in the VM, so we avoid them in the audio thread.
-            std::rename("audio_output.raw", "pipe.bin");
-        }
-        std::remove(fname);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        //     if (GetAsyncKeyState(0x50) & 0x8000)
-        //     {
-        //         run = false;
-        //         break;
-        //     }
-        //     MSG msg{};
-        //     while (BOOL b = PeekMessage(&msg, 0, 0, 0, PM_REMOVE))
-        //     {
-        //         if (b == -1)
-        //         {
-        //             run = false;
-        //             break;
-        //         }
-        //         TranslateMessage(&msg);
-        //         DispatchMessage(&msg);
-        //     }
+        char recvbuf[512];
+        int result = recv(acceptSocket, recvbuf, sizeof(recvbuf), 0);
 
-        //     for (auto &e : keyMap)
-        //     {
-        //         auto &key = e.second;
-        //         const auto on = (GetKeyState(e.first) & 0x8000) != 0;
-        //         if (key.status != on)
-        //         {
-        //             key.status = on;
-        //             vstPlugin.sendMidiNote(0, key.midiNote, on, 100);
-        //         }
-        //     }
+        if (result > 0)
+        {
+            recvAccum.append(recvbuf, recvbuf + result);
+
+            size_t nl = 0;
+            while ((nl = recvAccum.find('\n')) != std::string::npos)
+            {
+                std::string line = recvAccum.substr(0, nl);
+                recvAccum.erase(0, nl + 1);
+
+                const size_t c = line.find(':');
+                if (c == std::string::npos || c + 1 >= line.size())
+                {
+                    std::cout << "Malformed MIDI message: " << line << std::endl;
+                    continue;
+                }
+
+                const std::string key = line.substr(0, c);
+                const char onOff = line[c + 1];
+                const int vel = (c + 2 < line.size()) ? std::atoi(line.c_str() + c + 2) : 100;
+                const int midiNote = std::atoi(key.c_str());
+                const bool on = (onOff == '1');
+
+                // std::cout << "MIDI: note=" << midiNote << " on=" << on << " vel=" << vel << std::endl;
+                vstPlugin.sendMidiNote(0, midiNote, on, vel);
+            }
+        }
+        else if (result == 0)
+        {
+            std::cout << "Connection closing..." << std::endl;
+            run = false;
+        }
+        else
+        {
+            std::cout << "recv failed: " << WSAGetLastError() << std::endl;
+            run = false;
+        }
     }
+
+    closesocket(acceptSocket);
+    closesocket(serverSocket);
 }
 
 int main(int argc, char *argv[])
@@ -718,6 +774,18 @@ int main(int argc, char *argv[])
         std::cout << "Usage : " << argv[0] << " <VST Synth DLL>" << std::endl;
         return 1;
     }
+
+    // Initialize Winsock ONCE at startup
+    WSADATA wsaData;
+    int wsaerr;
+    WORD wVersionRequested = MAKEWORD(2, 2);
+    wsaerr = WSAStartup(wVersionRequested, &wsaData);
+    if (wsaerr != 0)
+    {
+        std::cout << "WSAStartup failed: " << wsaerr << std::endl;
+        return 1;
+    }
+
     try
     {
         mainLoop(argv[1]);
@@ -726,4 +794,5 @@ int main(int argc, char *argv[])
     {
         std::cout << "Exception : " << e.what() << std::endl;
     }
+    WSACleanup();
 }

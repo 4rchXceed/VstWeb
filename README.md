@@ -1,6 +1,9 @@
+**NOW**: Update V1.1.0 - Supports Real-time Audio Streaming!
+
 # VSTWeb
 
-VSTWeb is a JavaScript library for running Windows 32 bit VST plugins in the browser using WebAssembly.
+VSTWeb is a JavaScript library for running Windows 32 bit VST plugins in the browser using WebAssembly. (Realtime audio output)
+
 It is built on top of v86, a x86 "emulator" (native-to-wasm jit compiler) written in rust and compiled to WebAssembly. [https://github.com/copy/v86](https://github.com/copy/v86)
 
 **HUGE THANKS FOR THIS AMAZING PROJECT!**
@@ -12,16 +15,18 @@ The library handles the communication between the host and the browser, allowing
 
 ## Features (implemented)
 - Load 32 bit VST plugins in the browser
-- Run the plugin from a text file (view specification down below)
-- Recive the audio output from the plugin as an ArrayBuffer
-- Auto-convertor from midi to the text file (I call it "NotesTxt/notes.txt")
+- Auto-convertor from midi to the host's custom format ([midiNote]:[OnOff][velocity], e.g. "60:1100")
+- Streaming the audio output from the plugin to the browser (instead of reciving it as an ArrayBuffer), I still need to learn a little bit the v86 networking, but I'm lazy yk
+
+## Features (planned)
+- Support for multiple plugins. Right now, you can only load one plugin at a time, but I plan to add support for multiple plugins in the future.
 
 ## Features (if I have time)
 - Load and save VST settings, because I won't implement a GUI, it would be really useful to be able to load and save settings from a real DAW, and then load them in the browser.
 
 ## Features (probably won't be implemented, but would be nice to have)
-- Streaming the audio output from the plugin to the browser (instead of reciving it as an ArrayBuffer), I still need to learn a little bit the v86 networking, but I'm lazy yk
 - Having a GUI for the plugin. This is possible, but it would be really ressource intensive, and I don't think it's worth it.
+- State Saving: Saving the state of the machine into the IndexedDB. So you can import your plugin and have it ready to use without having to go through the whole installation process. This will probably be implemented. Moved to probably won't be implemented because of the new network system
 
 ## Features that are not possible
 - Load 64 bit VST plugins, because v86 only supports 32 bit
@@ -29,21 +34,6 @@ The library handles the communication between the host and the browser, allowing
 
 ## Examples
 - [midi](./examples/midi.html): Load a VST plugin and a midi file, and recive the audio as a wav file.
-
-## Specification for the text file
-The text file should be in the following format:
-```
-!:[time-to-wait-ms] <- wait for the specified time before executing the next command
-[midi-note-number]:1[velocity] <- turn "on" the note
-[midi-note-number]:0000 <- turn "off" the note (velocity is ignored)
-```
-For example:
-```
-!:1000
-60:127
-!:500
-60:0000
-```
 
 ## License
 VSTWeb is licensed under the MIT License. See the [LICENSE](./LICENSE) file for more details.
@@ -55,4 +45,17 @@ If you have any questions or suggestions, feel free to open an issue or contact 
 I'm hosting these images on my personal server, so they might disappear at any time, but here are the link:
 - [Shared nextcloud folder](https://webdash.dev/nextcloud/s/4kPZK45zmQ5F2wS) : Contains: the full arch installation with the required bootloader (bin.zip) + a build of v86 (v86.zip) + the state of the machine with everything installed and ready to use (state.bin)
 
+- If I update the files, I will move the old files to a "old" folder, so you can still access them if you need to.
+
 !!! IF THE LINKS ARE BROKEN, PLEASE CONTACT ME TO GET THE FILES BACK ONLINE !!!
+
+## FAQ
+**Q: Can I run this on mobile?**
+A: I haven't tested it on mobile, but it should struggle to run
+
+**Q: I recive a "fatal error: aeffectx.h: No such file or directory" error when trying to build source_cpp, what should I do?**
+A: This is because you don't have the VST SDK. It's no longer available for download. I put an archive.org link in the source_cpp/NOTES.txt file, but if you can't access it, you can contact me and I will send you the files.
+
+## What's next?
+- Implement MULTIPLE VSTs support
+- Better stability and performance improvements

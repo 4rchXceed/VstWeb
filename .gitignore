@@ -5,3 +5,10 @@ build/
 nextcloud-share/
 states/
 !states/.keep
+# We can't share these files, because I don't have the rights to share them. Please see source_cpp/NOTES.txt for more details.
+source_cpp/aeffectx.h
+source_cpp/aeffect.h
+source_cpp/main.exe
+
+# Personal files
+.tmp/

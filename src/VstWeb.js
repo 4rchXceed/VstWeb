@@ -1,11 +1,15 @@
-import { dirname } from "./Utils.js";
 import { V86 } from "../build/libv86.mjs";
+import PlayAudioStreamable from "./PlayAudioStreamable.js";
+import { Streamable } from "./Streamable.js";
 
 export class VstWeb {
+    VM_STATIC_ADRESS = "192.168.86.100"
+    VM_PORT_AUDIO_RECIVE = 12345
+    VM_PORT_NOTE_SEND = 12346
     deps = [
         "jszip.min.js",
     ];
-    VST_SCRIPT = "clear && boxedwine/opt/wine/bin/wine ./remote.exe \"::PLUGIN_PATH::\"";
+    VST_SCRIPT = "hwclock -s && modprobe virtio_net && dhcpcd -w4 enp0s10 && ip link set dev enp0s10 down && ip link set dev enp0s10 address ::MAC_ADDR:: && ip link set dev enp0s10 up && clear && boxedwine/opt/wine/bin/wine ./remote.exe \"::PLUGIN_PATH::\"";
     SYNC_FILES = [
         "programs/remote.exe"
     ];
@@ -33,7 +37,11 @@ export class VstWeb {
             "rw",
             "root=host9p rootfstype=9p rootflags=trans=virtio,cache=loose",
             "init=/sbin/init",
-        ].join(" ")
+        ].join(" "),
+        net_device: {
+            relay_url: "fetch",
+            type: "virtio"
+        },
     };
 
     /**
@@ -70,6 +78,8 @@ export class VstWeb {
         this.vmContainer = vmContainer;
         this.appSettings = appSettings;
         this.vm_settings = JSON.parse(JSON.stringify(this.DEFAULT_VM_SETTINGS)); // Deep copy
+        this.isAudioStreamConnected = false;
+        this.noteSendConnection = null;
         for (const [key, value] of Object.entries(vmSettingsOverrides)) {
             this.vm_settings[key] = value;
         }
@@ -182,14 +192,112 @@ export class VstWeb {
         }
     }
 
+    // TODO: Handle the case where the port is closed and retry
+    /**
+     * Connect to the VST host
+     * @param {Streamable} streamable 
+     * @returns 
+     */
+    async startNetworking(streamable = PlayAudioStreamable) {
+        await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait a little bit
+        (async () => {
+            if (!this.isAudioStreamConnected) {
+                // let open = await this.vm.network_adapter.tcp_probe(this.VM_PORT_AUDIO_RECIVE);
+                // if (open) {
+                this.log(`Port ${this.VM_PORT_AUDIO_RECIVE} is open, starting audio stream...`);
+                const audioStream = new streamable();
+                let connection = null;
+                while (!connection || connection.state !== "established") {
+                    connection = await this.vm.network_adapter.connect(this.VM_PORT_AUDIO_RECIVE);
+                    await new Promise((resolve) => setTimeout(resolve, 500));
+                }
+                connection.on("connect", () => {
+                    this.log("Audio stream connected!");
+                    this.isAudioStreamConnected = true;
+                });
+                connection.on("data", async (data) => {
+                    await audioStream.write(data);
+                });
+                connection.on("close", () => {
+                    this.log("Audio stream closed!");
+                    this.isAudioStreamConnected = false;
+                });
+                connection.on("shutdown", () => {
+                    this.log("Audio stream shutdown!");
+                    this.isAudioStreamConnected = false;
+                });
+                // }
+            } else {
+                this.log("Audio stream is already connected!");
+            }
+        })();
+        while (!this.vm.fs9p.SearchPath("/root/.finished_start").id === -1) { // Wait for the file .finished_start to be created in the VM filesystem
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        if (this.noteSendConnection === null) {
+            // let noteSendOpen = await this.vm.network_adapter.tcp_probe(this.VM_PORT_NOTE_SEND);
+            // if (noteSendOpen) {
+            this.log(`Port ${this.VM_PORT_NOTE_SEND} is open, starting note send stream...`);
+
+            while (this.noteSendConnection === null || (this.noteSendConnection && this.noteSendConnection.state !== "established")) {
+                this.noteSendConnection = await this.vm.network_adapter.connect(this.VM_PORT_NOTE_SEND);
+                await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+            // Idk why but the event listeners for this connection don't work
+            // noteSendConnection.on("connect", () => {
+            //     this.log("Note send stream connected!");
+            //     this.noteSendConnection = noteSendConnection;
+            // });
+            // noteSendConnection.on("close", () => {
+            //     this.log("Note send stream closed!");
+            //     this.noteSendConnection = null;
+            // });
+            // noteSendConnection.on("shutdown", () => {
+            //     this.log("Note send stream shutdown!");
+            //     this.noteSendConnection = null;
+            // });
+            // }
+        } else {
+            this.log("Note send stream is already connected!");
+        }
+        return new Promise((resolve) => {
+            const checkConnections = () => {
+                if (this.isAudioStreamConnected && this.noteSendConnection !== null) {
+                    resolve();
+                } else {
+                    setTimeout(checkConnections, 100);
+                }
+            };
+            checkConnections();
+        });
+    }
+
+    /**
+     * Send a note to the VST
+     * @param {string} noteTxt Note to the format: ([midiNote]:[OnOff][velocity], e.g. "60:1100")
+     * @returns 
+     */
+    sendNote(noteTxt) {
+        this.log(`Sending note: ${noteTxt}`);
+        if (this.noteSendConnection === null) {
+            this.log("Note send connection is not established, can't send note!");
+            return false;
+        } else {
+            this.noteSendConnection.write(new TextEncoder().encode(noteTxt + "\n")); // Add a newline at the end of the note
+            return true;
+        }
+    }
+
+
     /**
      * Load a VST plugin into the VM. This will extract the plugin files from a ZIP archive and place them in the VM's filesystem.
      * This will take a while (on my PC: 30s)
      * @param {ArrayBuffer} archive A ZIP archive containing the VST plugin files. 
      * @param {string} pluginPath The path to the plugin's .dll file inside the archive (e.g. "MyPlugin/MyPlugin.dll").
+     * @param {class} streamable A class that extends the Streamable class, used to stream the audio data from the VM to the browser. By default, it uses the PlayAudioStreamable class, which plays the audio directly in the browser. See the Streamable class for more details
      * @returns 
      */
-    async loadVSTPlugin(archive, pluginPath) {
+    async loadVSTPlugin(archive, pluginPath, streamable = PlayAudioStreamable) {
         const zip = await JSZip.loadAsync(archive);
         if (this.vm.fs9p.SearchPath("/root/vsts").id === -1) {
             this.log("Creating /root/vsts directory in vm filesystem");
@@ -218,7 +326,14 @@ export class VstWeb {
                 }
             }
         }
-        const command = this.VST_SCRIPT.replace("::PLUGIN_PATH::", `./vsts/${pluginPath}`);
+
+        const ipString = [];
+
+        for (const hex of this.vm.network_adapter.vm_mac) {
+            ipString.push(hex.toString(16));
+        }
+
+        const command = this.VST_SCRIPT.replace("::PLUGIN_PATH::", `./vsts/${pluginPath}`).replace("::MAC_ADDR::", ipString.join(":"));
         this.log(`Executing command in VM: ${command}`);
         this.vm.keyboard_send_text(command + "\n");
         let isProcessed = false;
@@ -229,14 +344,16 @@ export class VstWeb {
                 await new Promise(resolve => setTimeout(resolve, 50));
             }
         }
+        await this.startNetworking(streamable);
         this.log("Plugin loaded successfully!");
         return;
     }
 
     /**
+     * @deprecated Not used anymore
      * Convert a Float32Array of audio data to a WAV buffer.
      * @param {Float32Array} audioData The audio data to convert to a WAV buffer. The audio data is generated by the /source_cpp (in the repository)
-     * @returns {ArrayBuffer} The WAV buffer
+     * @returns {Promise<ArrayBuffer>} The WAV buffer
      */
     async bufferToWavBuffer(audioData) {
         const channels = this.REMOTE_SCRIPT_AUDIO_SETTINGS.channels;
@@ -247,6 +364,7 @@ export class VstWeb {
 
     // Found idk where
     /**
+     * @deprecated Not used anymore
      * Can't say much about this, except that it's the function to go from raw audio samples to a WAV file.
      */
     encodeWav(samples, channels, sampleRate) {
@@ -285,11 +403,13 @@ export class VstWeb {
         return buffer;
     }
 
+
     /**
-     * Process the notes text generated by MidiToNotesTxt.js (or in the format of the notes.txt file in the repository)
-     * @param {string} notesTxt The notes text to process (can be generated with MidiToNotesTxt.js)
-     * @returns {Promise<ArrayBuffer>} The WAV buffer generated by the plugin in the VM.
-     */
+        * @deprecated THIS FUNCTION WON'T WORK ANYMORE, BECAUSE OF THE UPDATED SOURCE_CPP CODE. USE THE Streamable CLASS INSTEAD (when calling loadVstPlugin())
+        * Process the notes text generated by MidiToNotesTxt.js (or in the format of the notes.txt file in the repository)
+        * @param {string} notesTxt The notes text to process (can be generated with MidiToNotesTxt.js)
+        * @returns {Promise<ArrayBuffer>} The WAV buffer generated by the plugin in the VM.
+        */
     async processNotes(notesTxt) {
         const rootId = this.vm.fs9p.SearchPath("/root").id;
         if (rootId === -1) {

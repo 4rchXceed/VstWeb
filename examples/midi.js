@@ -1,4 +1,5 @@
 import { midiToNotesTxt } from "../src/MidiToNotesTxt.js";
+import PlayAudioStreamable from "../src/PlayAudioStreamable.js";
 import { VstWeb } from "../src/VstWeb.js";
 // Source - https://stackoverflow.com/a/65953657
 // Posted by Kuba
@@ -15,7 +16,8 @@ const vstWeb = new VstWeb(vmContainer, {
     syncFiles: {
         loadFiles: true,
         files: [
-            "../programs/remote.exe"
+            "../programs/remote.exe",
+            "../.tmp/ex"
         ]
     },
     keybaord_enabled: false
@@ -33,6 +35,10 @@ const vstWeb = new VstWeb(vmContainer, {
             baseurl: "../bin/arch/",
             basefs: "../bin/arch.json",
         },
+        net_device: {
+            relay_url: "fetch",
+            type: "virtio"
+        },
     });
 window.vstWeb = vstWeb; // For debugging
 const vstFileInput = document.getElementById("loadVst");
@@ -49,15 +55,16 @@ document.getElementById("process").addEventListener("click", async () => {
         const midiArrayBuffer = await midiFileInput.files[0].arrayBuffer();
         const notesTxt = midiToNotesTxt(midiArrayBuffer);
         const vstArrayBuffer = await vstFileInput.files[0].arrayBuffer();
-        await vstWeb.loadVSTPlugin(vstArrayBuffer, vstFileName.value);
-        const wav = await vstWeb.processNotes(notesTxt);
-        const blob = new Blob([wav], { type: "audio/wav" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "output.wav";
-        a.click();
-        URL.revokeObjectURL(url);
+        await vstWeb.loadVSTPlugin(vstArrayBuffer, vstFileName.value, PlayAudioStreamable); // Use the prebuilt PlayAudioStreamable class to play the audio output of the plugin in real time.
+        for (const line of notesTxt.split("\n")) {
+            let parts = line.split(":");
+            if (parts[0] === "!") {
+                await new Promise(resolve => setTimeout(resolve, parseInt(parts[1]) / 2));
+            }
+            else {
+                vstWeb.sendNote(line);
+            }
+        }
     } else {
         alert("Please load a MIDI file first.");
     }
