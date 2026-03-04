@@ -100,7 +100,7 @@ class PlayAudioStreamable extends Streamable {
 
             if (this.scheduledUntil < now) {
                 if (this.debug) {
-                    console.warn(`[VstWeb][audio] gap detected! scheduledUntil=${this.scheduledUntil.toFixed(3)}, now=${now.toFixed(3)}`);
+                    console.error(`[VstWeb][audio] gap detected! scheduledUntil=${this.scheduledUntil.toFixed(3)}, now=${now.toFixed(3)}`);
                 }
                 this._dbgGaps++;
                 this.scheduledUntil = now + this.bufferAheadTime;
@@ -133,7 +133,7 @@ class PlayAudioStreamable extends Streamable {
                 }
             }
         } catch (err) {
-            console.error("[VstWeb][audio] write() failed:", err);
+            console.error("[VstWeb][audio] error processing audio chunk:", err);
         }
     }
 }

@@ -70,6 +70,7 @@ export class VstWeb {
             loadFiles: true,
             files: [...this.SYNC_FILES],
         },
+        jsZipUrl: "./jszip.min.js", // ONLY used in a web worker context
         keybaord_enabled: false,
     }, loggingEnabled = true, vmSettingsOverrides = {}
     ) {
@@ -77,14 +78,27 @@ export class VstWeb {
         this.vm = null;
         this.vmContainer = vmContainer;
         this.appSettings = appSettings;
+        this.isWaiting = false;
         this.vm_settings = JSON.parse(JSON.stringify(this.DEFAULT_VM_SETTINGS)); // Deep copy
         this.isAudioStreamConnected = false;
         this.noteSendConnection = null;
         for (const [key, value] of Object.entries(vmSettingsOverrides)) {
             this.vm_settings[key] = value;
         }
-        if (!window.JSZip) {
-            this.log("JSZip not found!");
+        if (!globalThis.window) { // Web worker
+            (async () => {
+                globalThis.importScripts = function (url) { };
+                await import(appSettings.jsZipUrl);
+                // console.log(globalThis.JSZip);
+                globalThis.window = {
+                    addEventListener: () => { },
+                    removeEventListener: () => { },
+                }
+            })();
+        } else {
+            if (!window.JSZip) {
+                this.log("JSZip not found!");
+            }
         }
     }
 
@@ -211,21 +225,23 @@ export class VstWeb {
                     connection = await this.vm.network_adapter.connect(this.VM_PORT_AUDIO_RECIVE);
                     await new Promise((resolve) => setTimeout(resolve, 500));
                 }
-                connection.on("connect", () => {
-                    this.log("Audio stream connected!");
-                    this.isAudioStreamConnected = true;
-                });
+                this.isAudioStreamConnected = true;
+                // Events are broken
+                // connection.on("connect", () => {
+                //     this.log("Audio stream connected!");
+                //     this.isAudioStreamConnected = true;
+                // });
                 connection.on("data", async (data) => {
                     await audioStream.write(data);
                 });
-                connection.on("close", () => {
-                    this.log("Audio stream closed!");
-                    this.isAudioStreamConnected = false;
-                });
-                connection.on("shutdown", () => {
-                    this.log("Audio stream shutdown!");
-                    this.isAudioStreamConnected = false;
-                });
+                // connection.on("close", () => {
+                //     this.log("Audio stream closed!");
+                //     this.isAudioStreamConnected = false;
+                // });
+                // connection.on("shutdown", () => {
+                //     this.log("Audio stream shutdown!");
+                //     this.isAudioStreamConnected = false;
+                // });
                 // }
             } else {
                 this.log("Audio stream is already connected!");
@@ -243,6 +259,12 @@ export class VstWeb {
                 this.noteSendConnection = await this.vm.network_adapter.connect(this.VM_PORT_NOTE_SEND);
                 await new Promise((resolve) => setTimeout(resolve, 500));
             }
+            this.noteSendConnection.on("data", async (data) => {
+                if (new TextDecoder().decode(data).trim() === "OK") {
+                    this.isWaiting = false;
+                }
+            });
+
             // Idk why but the event listeners for this connection don't work
             // noteSendConnection.on("connect", () => {
             //     this.log("Note send stream connected!");
@@ -347,6 +369,27 @@ export class VstWeb {
         await this.startNetworking(streamable);
         this.log("Plugin loaded successfully!");
         return;
+    }
+
+    async wait(delay) {
+        if (this.isWaiting) {
+            this.log("Already waiting, skipping wait call");
+            return;
+        }
+        if (!this.noteSendConnection) {
+            this.log("Error: Note send connection not found!");
+            return;
+        }
+        this.isWaiting = true;
+        this.noteSendConnection.write(new TextEncoder().encode(`!:${delay}\n`)); // !:1000 = wait for 1000ms
+        const startTime = performance.now();
+        while (this.isWaiting) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+            if (performance.now() - startTime > delay) {
+                this.log("Wait timeout reached, breaking wait");
+                break;
+            }
+        }
     }
 
     /**

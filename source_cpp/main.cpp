@@ -742,13 +742,37 @@ void mainLoop(const char *dllFilename)
                 }
 
                 const std::string key = line.substr(0, c);
-                const char onOff = line[c + 1];
-                const int vel = (c + 2 < line.size()) ? std::atoi(line.c_str() + c + 2) : 100;
-                const int midiNote = std::atoi(key.c_str());
-                const bool on = (onOff == '1');
+                if (key == "!")
+                {
+                    const std::string waittime = line.substr(1, c - 1);
+                    const int ms = std::atoi(waittime.c_str());
+                    std::this_thread::sleep_for(std::chrono::milliseconds(ms)); // Allow the script to send a sleep (for e.g every 1s to avoid flooding the socket)
+                    // Then send an "OK" back
+                    const std::string response = "OK\n";
+                    int bytesSent = 0;
+                    while (bytesSent < response.size())
+                    {
+                        int sendResult = send(acceptSocket, response.c_str() + bytesSent, static_cast<int>(response.size() - bytesSent), 0);
+                        if (sendResult == SOCKET_ERROR)
+                        {
+                            std::cout << "send failed: " << WSAGetLastError() << std::endl;
+                            closesocket(acceptSocket);
+                            WSACleanup();
+                            return;
+                        }
+                        bytesSent += sendResult;
+                    }
+                }
+                else
+                {
+                    const char onOff = line[c + 1];
+                    const int vel = (c + 2 < line.size()) ? std::atoi(line.c_str() + c + 2) : 100;
+                    const int midiNote = std::atoi(key.c_str());
+                    const bool on = (onOff == '1');
 
-                // std::cout << "MIDI: note=" << midiNote << " on=" << on << " vel=" << vel << std::endl;
-                vstPlugin.sendMidiNote(0, midiNote, on, vel);
+                    // std::cout << "MIDI: note=" << midiNote << " on=" << on << " vel=" << vel << std::endl;
+                    vstPlugin.sendMidiNote(0, midiNote, on, vel);
+                }
             }
         }
         else if (result == 0)
