@@ -1,4 +1,4 @@
-import PlayAudioStreamable from "../../src/PlayAudioStreamable.js";
+import PlayAudioStreamable from "../../VstWeb/src/PlayAudioStreamable.js";
 
 // This WILL be a web worker
 export class VstWorker {
@@ -15,7 +15,7 @@ export class VstWorker {
             ]
         },
         jsZipUrl: "../../VstWeb/lib/jszip.min.js",
-        keybaord_enabled: false
+        // keybaord_enabled: false
     }
 
     V86_CONFIG_TEMPLATE = {
@@ -40,23 +40,58 @@ export class VstWorker {
     constructor(hiddenHtmlElement, config = { vstWeb: JSON.parse(JSON.stringify(this.VSTWEB_CONFIG_TEMPLATE)), v86: JSON.parse(JSON.stringify(this.V86_CONFIG_TEMPLATE)) }) {
         this.debug = true;
         this.htmlElement = hiddenHtmlElement;
+        this.canvas = document.createElement("canvas");
+        this.canvas.width = 1024; // TODO: Make it dynamic
+        this.canvas.height = 768;
+        this.htmlElement.appendChild(this.canvas);
         window.global = window; // Expose the global object for VstWeb not to break
         this.vstWebConfig = config.vstWeb;
         this.worker = new Worker("./src/Audio/VstWorker.js", { type: "module" });
         this.v86Config = config.v86;
-        this.started = false;
+        this.started = true; // TODO: Bugfix
         this.ready = false;
         this.stream = new PlayAudioStreamable();
-        this.screenData = null;
+        this.isIdle = false;
+        this.state = null;
+    }
+
+    stopIdle() {
+        if (!this.isIdle) return;
+        this.isIdle = false;
+        this.worker.postMessage({ type: "idle_stop" });
+    }
+
+    idle() {
+        if (this.isIdle) return;
+        this.isIdle = true;
+        this.worker.postMessage({ type: "idle_start" });
+    }
+
+    handleMessage(event) {
+        if (!event.data) return;
+        const { type, data } = event.data;
+        if (type === "audio") {
+            this.stream.write(data);
+        } else if (type === "imageData") {
+            this.canvas.getContext("2d").putImageData(data.imageData, data.x, data.y, data.dx, data.dy, data.b_w, data.b_h);
+        } else if (type === "load_done") {
+            this.ready = true;
+            if (data.hasState) {
+                this.state = data.state;
+            }
+        }
     }
 
     async init() {
         this.worker.postMessage({ type: "init", data: { vstWebConfig: this.vstWebConfig, v86Config: this.v86Config } });
         await new Promise(resolve => {
             this.worker.onmessage = (event) => {
+                if (!event.data) return;
                 if (event.data.type === "init_done") {
-                    window.log("VstWorker: VM is ready");
+                    console.log("VstWorker: VM is ready");
                     resolve();
+                } else {
+                    this.handleMessage(event);
                 }
             };
         });
@@ -64,47 +99,41 @@ export class VstWorker {
     }
 
 
-    async loadVst(vstArrayBuffer, pluginPath) {
+    async loadVst(vstArrayBuffer, pluginPath, idle = true, saveState = false) {
         if (!this.started) {
-            console.log(false, "VstWorker: Cannot load VST plugin before starting the VM. Call init() first.");
+            console.error(false, "VstWorker: Cannot load VST plugin before starting the VM. Call init() first.");
         }
-        this.worker.postMessage({ type: "loadVst", data: { vstArrayBuffer, pluginPath } });
-        await new Promise(resolve => {
-            this.worker.onmessage = (event) => {
-                if (event.data.type === "loadVst_done") {
-                    console.log("VstWorker: VST plugin loaded and ready");
-                    resolve();
-                }
-            };
-        });
+        this.worker.postMessage({ type: "loadVst", data: { vstArrayBuffer, pluginPath, saveState } });
+        while (!this.ready) {
+            await new Promise((r) => setTimeout(r, 100));
+        }
         this.worker.onmessage = (event) => {
-            const { type, data } = event.data;
-            if (type === "getScreen") {
-                this.screenData = data;
-            } else if (type === "audio") {
-                this.stream.write(data);
-            }
+            this.handleMessage(event);
         }
         this.ready = true;
+        if (idle) {
+            this.idle();
+        }
+        return this.state; // Return the state if it was loaded
     }
 
     async playNote(note, velocity, duration) {
         if (!this.ready) {
-            console.log(false, "VstWorker: Cannot play note before loading VST plugin. Call loadVst() first.");
+            console.error(false, "VstWorker: Cannot play note before loading VST plugin. Call loadVst() first.");
         }
         this.worker.postMessage({ type: "playNote", data: { note, velocity, duration } });
     }
 
     async noteOn(note, velocity) {
         if (!this.ready) {
-            console.log(false, "VstWorker: Cannot turn note on before loading VST plugin. Call loadVst() first.");
+            console.error(false, "VstWorker: Cannot turn note on before loading VST plugin. Call loadVst() first.");
         }
         this.worker.postMessage({ type: "noteOn", data: { note, velocity } });
     }
 
     async noteOff(note, velocity) {
         if (!this.ready) {
-            console.log(false, "VstWorker: Cannot turn note off before loading VST plugin. Call loadVst() first.");
+            console.error(false, "VstWorker: Cannot turn note off before loading VST plugin. Call loadVst() first.");
         }
         this.worker.postMessage({ type: "noteOff", data: { note, velocity } });
 
@@ -118,30 +147,32 @@ export class VstWorker {
         return this.ready;
     }
 
-    async getScreen() {
-        if (!this.ready) {
-            console.log(false, "VstWorker: Cannot get screen before loading VST plugin. Call loadVst() first.");
+    getScreen() {
+        if (!this.started) {
+            console.error(false, "VstWorker: Cannot get screen before starting the VM. Call init() first.");
         }
-        this.worker.postMessage({ type: "getScreen" });
-        await new Promise(resolve => {
-            const checkScreenData = () => {
-                if (this.screenData) {
-                    resolve();
-                } else {
-                    setTimeout(checkScreenData, 100);
-                }
-            };
-            checkScreenData();
-        });
-        const screenData = this.screenData;
-        this.screenData = null; // Clear the screen data after retrieving it to avoid returning stale data on the next call
-        return screenData;
+        return this.canvas.toDataURL();
     }
 
-    async wait(delay) {
+    loadState(state) {
+        if (!this.started) {
+            console.error(false, "VstWorker: Cannot load state before starting the VM. Call init() first.");
+        }
+        this.worker.postMessage({ type: "loadState", data: { state } });
+        this.ready = true;
+    }
+
+    wait(delay) {
         if (!this.ready) {
-            console.log(false, "VstWorker: Cannot wait before loading VST plugin. Call loadVst() first.");
+            console.error(false, "VstWorker: Cannot wait before loading VST plugin. Call loadVst() first.");
         }
         this.worker.postMessage({ type: "wait", data: { delay } });
+    }
+
+    sendKey(key, isCtrl = false) {
+        if (!this.started) {
+            console.error(false, "VstWorker: Cannot send key before loading VST plugin. Call loadVst() first.");
+        }
+        this.worker.postMessage({ type: "sendKey", data: { key, isCtrl } });
     }
 }

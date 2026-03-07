@@ -14,14 +14,16 @@ class PlayAudioStreamable extends Streamable {
         this.channels = 2;
         this.streamSampleRate = 44100;
         this.nextStartTime = 0;
-        this.bufferAheadTime = 1; // 1s buffer
+        this.bufferAheadTime = 0.35;
         this.scheduledUntil = 0;
+        this.minQueuedSeconds = 0.08;
+        this.maxQueuedSeconds = 1.2;
 
         this.masterGain = this.audioContext.createGain();
         this.masterGain.gain.value = 1.0;
         this.masterGain.connect(this.audioContext.destination);
 
-        this.debug = false;
+        this.debug = true;
         this._dbgChunks = 0;
         this._dbgFrames = 0;
         this._dbgLastTs = performance.now();
@@ -94,24 +96,30 @@ class PlayAudioStreamable extends Streamable {
             const now = this.audioContext.currentTime;
             const chunkDuration = frameCount / this.streamSampleRate;
 
-            if (this.scheduledUntil === 0) {
-                this.scheduledUntil = now + this.bufferAheadTime;
-            }
+            let startAt = this.scheduledUntil || (now + this.bufferAheadTime);
+            const queued = startAt - now;
 
-            if (this.scheduledUntil < now) {
-                if (this.debug) {
-                    console.error(`[VstWeb][audio] gap detected! scheduledUntil=${this.scheduledUntil.toFixed(3)}, now=${now.toFixed(3)}`);
+            if (queued < this.minQueuedSeconds) {
+                if (this.scheduledUntil !== 0) {
+                    console.warn(
+                        `[VstWeb][audio] underrun recovery: queued=${(queued * 1000).toFixed(1)}ms -> reset to ${(this.bufferAheadTime * 1000).toFixed(1)}ms`
+                    );
+                    this._dbgGaps++;
                 }
-                this._dbgGaps++;
-                this.scheduledUntil = now + this.bufferAheadTime;
+                startAt = now + this.bufferAheadTime;
+            } else if (queued > this.maxQueuedSeconds) {
+                console.warn(
+                    `[VstWeb][audio] queue clamp: queued=${(queued * 1000).toFixed(1)}ms -> reset to ${(this.bufferAheadTime * 1000).toFixed(1)}ms`
+                );
+                startAt = now + this.bufferAheadTime;
             }
 
             const src = this.audioContext.createBufferSource();
             src.buffer = audioBuffer;
             src.connect(this.masterGain);
-            src.start(this.scheduledUntil);
+            src.start(startAt);
 
-            this.scheduledUntil += chunkDuration;
+            this.scheduledUntil = startAt + chunkDuration;
 
             if (this.debug) {
                 this._dbgChunks++;

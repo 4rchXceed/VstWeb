@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <iostream>
 #include <map>
 #include <fstream>
@@ -450,8 +451,12 @@ struct SocketAudioSender
 private:
     void threadFunc()
     {
-        const uint32_t framesPerBuffer = 1024;
+        const int sendPerSec = 147;
+        const uint32_t framesPerBuffer = mixFormat.nSamplesPerSec / sendPerSec; // 44100 samples per second, divided by how many times we want to send per second
+        const auto chunkDuration = std::chrono::duration<double>(
+            static_cast<double>(framesPerBuffer) / static_cast<double>(mixFormat.nSamplesPerSec));
         std::vector<float> buffer(framesPerBuffer * mixFormat.nChannels);
+        auto nextTick = std::chrono::steady_clock::now();
 
         while (running)
         {
@@ -462,17 +467,30 @@ private:
                 while (bytesSent < bytesToSend)
                 {
                     int result = send(acceptSocket, reinterpret_cast<const char *>(buffer.data()) + bytesSent, bytesToSend - bytesSent, 0);
-                    if (result == SOCKET_ERROR)
+                    if (result != SOCKET_ERROR)
                     {
-                        std::cout << "send failed: " << WSAGetLastError() << std::endl;
-                        closesocket(acceptSocket);
-                        WSACleanup();
-                        return;
+                        bytesSent += result;
                     }
-                    bytesSent += result;
+                    else
+                    {
+                        std::cout << "send() failed: " << WSAGetLastError() << std::endl;
+                    }
+                }
+
+                // Pace by audio duration per chunk. This avoids integer-ms truncation drift.
+                nextTick += std::chrono::duration_cast<std::chrono::steady_clock::duration>(chunkDuration);
+
+                const auto now = std::chrono::steady_clock::now();
+                if (nextTick > now)
+                {
+                    std::this_thread::sleep_until(nextTick);
+                }
+                else
+                {
+                    // If the sender falls behind, resync instead of accumulating delay.
+                    nextTick = now;
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 

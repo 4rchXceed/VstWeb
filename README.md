@@ -1,4 +1,4 @@
-**NOW**: Update V1.1.0 - Supports Real-time Audio Streaming!
+**NOW**: Update V1.2.0 - Supports state loading and saving (for waaaay faster loading time)
 
 # VSTWeb
 
@@ -17,6 +17,7 @@ The library handles the communication between the host and the browser, allowing
 - Load 32 bit VST plugins in the browser
 - Auto-convertor from midi to the host's custom format ([midiNote]:[OnOff][velocity], e.g. "60:1100")
 - Streaming the audio output from the plugin to the browser (instead of reciving it as an ArrayBuffer), I still need to learn a little bit the v86 networking, but I'm lazy yk
+- State Saving: Saving the state of the machine, and load it later. I did it because waiting 30s every time I want to test a plugin is really annoying, but now it only takes 1-2s.
 
 ## Features (planned)
 - Support for multiple plugins. Right now, you can only load one plugin at a time, but I plan to add support for multiple plugins in the future.
@@ -26,7 +27,6 @@ The library handles the communication between the host and the browser, allowing
 
 ## Features (probably won't be implemented, but would be nice to have)
 - Having a GUI for the plugin. This is possible, but it would be really ressource intensive, and I don't think it's worth it.
-- State Saving: Saving the state of the machine into the IndexedDB. So you can import your plugin and have it ready to use without having to go through the whole installation process. This will probably be implemented. Moved to probably won't be implemented because of the new network system
 
 ## Features that are not possible
 - Load 64 bit VST plugins, because v86 only supports 32 bit

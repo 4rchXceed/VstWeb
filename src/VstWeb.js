@@ -9,7 +9,8 @@ export class VstWeb {
     deps = [
         "jszip.min.js",
     ];
-    VST_SCRIPT = "hwclock -s && modprobe virtio_net && dhcpcd -w4 enp0s10 && ip link set dev enp0s10 down && ip link set dev enp0s10 address ::MAC_ADDR:: && ip link set dev enp0s10 up && clear && boxedwine/opt/wine/bin/wine ./remote.exe \"::PLUGIN_PATH::\"";
+    TIME_SYNC_COMMAND = "hwclock -s\n";
+    VST_SCRIPT = "hwclock -s && modprobe virtio_net && dhcpcd -w4 enp0s10 && ip link set dev enp0s10 down && ip link set dev enp0s10 address ::MAC_ADDR:: && ip link set dev enp0s10 up && clear && boxedwine/opt/wine/bin/wine ./remote.exe \"::PLUGIN_PATH::\" &";
     SYNC_FILES = [
         "programs/remote.exe"
     ];
@@ -81,6 +82,7 @@ export class VstWeb {
         this.isWaiting = false;
         this.vm_settings = JSON.parse(JSON.stringify(this.DEFAULT_VM_SETTINGS)); // Deep copy
         this.isAudioStreamConnected = false;
+        this.audioStream = null;
         this.noteSendConnection = null;
         for (const [key, value] of Object.entries(vmSettingsOverrides)) {
             this.vm_settings[key] = value;
@@ -138,17 +140,48 @@ export class VstWeb {
     }
 
     /**
+     * !!! THIS NEEDS TO BE CALLED FROM AN ASYNC FUNCTION, OTHERWISE THE XMLHttpRequest WON'T WORK (see https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest_API/Synchronous_and_Asynchronous_Requests) !!!
+     * RUNNING THE VM IN A WEB WORKER IS RECOMMENDED
      * Load the state of the VM from a given URL. The state should be a binary file that can be loaded by the VM. You can use https://copy.sh/v86/ to create a state file from a running VM. (it needs to be the exact VM image that you're using in VstWeb, otherwise it will not work).
      * I advise you to get the "official" VstWeb image from README, and use the official state file (I spent a lot of time creating this image, it's very tricky to get everything working)
      * @param {string} stateUrl 
      */
     async loadState(stateUrl) {
-        const response = await fetch(stateUrl);
-        if (!response.ok) {
+        const xmlHttp = new XMLHttpRequest();
+        xmlHttp.responseType = "arraybuffer";
+        let stateLoaded = false;
+        xmlHttp.onload = function () {
+            if (xmlHttp.status === 200) {
+                stateLoaded = true;
+            } else {
+                console.error(`Failed to load state: ${xmlHttp.status} ${xmlHttp.statusText}`);
+            }
+        }
+        xmlHttp.onerror = function () {
             throw new Error(`Failed to fetch state: ${response.status} ${response.statusText}`);
         }
-        const state = await response.arrayBuffer();
-        this.vm.restore_state(state);
+        xmlHttp.open("GET", stateUrl, window.location ? true : false); // If we're in a web worker, we need to make a synchronous request, otherwise the onload event won't work. WINDOW is defined in the worker sometimes (fake window object)
+        xmlHttp.send(null);
+
+        await new Promise((resolve) => {
+            const checkStateLoaded = () => {
+                if (stateLoaded) {
+                    resolve();
+                } else {
+                    setTimeout(checkStateLoaded, 100);
+                }
+            }
+            checkStateLoaded();
+        });
+
+        // const response = await fetch(stateUrl);
+
+        // if (!response.ok) {
+
+        // }
+
+
+        this.vm.restore_state(xmlHttp.response);
         if (this.appSettings.syncFiles.loadFiles) {
             await this.loadFiles(this.appSettings.syncFiles.files);
         }
@@ -218,27 +251,31 @@ export class VstWeb {
             if (!this.isAudioStreamConnected) {
                 // let open = await this.vm.network_adapter.tcp_probe(this.VM_PORT_AUDIO_RECIVE);
                 // if (open) {
-                this.log(`Port ${this.VM_PORT_AUDIO_RECIVE} is open, starting audio stream...`);
                 const audioStream = new streamable();
-                let connection = null;
-                while (!connection || connection.state !== "established") {
-                    connection = await this.vm.network_adapter.connect(this.VM_PORT_AUDIO_RECIVE);
+                this.audioStream = null;
+                while (!this.audioStream || this.audioStream.state !== "established") {
+                    this.audioStream = await this.vm.network_adapter.connect(this.VM_PORT_AUDIO_RECIVE);
                     await new Promise((resolve) => setTimeout(resolve, 500));
                 }
+                this.log(`Port ${this.VM_PORT_AUDIO_RECIVE} is open, starting audio stream...`);
                 this.isAudioStreamConnected = true;
+
                 // Events are broken
                 // connection.on("connect", () => {
                 //     this.log("Audio stream connected!");
                 //     this.isAudioStreamConnected = true;
                 // });
-                connection.on("data", async (data) => {
+                this.audioStream.on("data", async (data) => {
                     await audioStream.write(data);
+                    setTimeout(() => {
+                        this.audioStream.write(new TextEncoder().encode("OK\n")); // Send an OK back to the VM
+                    }, 10);
                 });
-                // connection.on("close", () => {
+                // this.audioStream.on("close", () => {
                 //     this.log("Audio stream closed!");
                 //     this.isAudioStreamConnected = false;
                 // });
-                // connection.on("shutdown", () => {
+                // this.audioStream.on("shutdown", () => {
                 //     this.log("Audio stream shutdown!");
                 //     this.isAudioStreamConnected = false;
                 // });
@@ -253,12 +290,12 @@ export class VstWeb {
         if (this.noteSendConnection === null) {
             // let noteSendOpen = await this.vm.network_adapter.tcp_probe(this.VM_PORT_NOTE_SEND);
             // if (noteSendOpen) {
-            this.log(`Port ${this.VM_PORT_NOTE_SEND} is open, starting note send stream...`);
 
             while (this.noteSendConnection === null || (this.noteSendConnection && this.noteSendConnection.state !== "established")) {
                 this.noteSendConnection = await this.vm.network_adapter.connect(this.VM_PORT_NOTE_SEND);
                 await new Promise((resolve) => setTimeout(resolve, 500));
             }
+            this.log(`Port ${this.VM_PORT_NOTE_SEND} is open, starting note send stream...`);
             this.noteSendConnection.on("data", async (data) => {
                 if (new TextDecoder().decode(data).trim() === "OK") {
                     this.isWaiting = false;
@@ -266,15 +303,15 @@ export class VstWeb {
             });
 
             // Idk why but the event listeners for this connection don't work
-            // noteSendConnection.on("connect", () => {
+            // this.noteSendConnection.on("connect", () => {
             //     this.log("Note send stream connected!");
-            //     this.noteSendConnection = noteSendConnection;
+            //     this.noteSendConnection = this.noteSendConnection;
             // });
-            // noteSendConnection.on("close", () => {
+            // this.noteSendConnection.on("close", () => {
             //     this.log("Note send stream closed!");
             //     this.noteSendConnection = null;
             // });
-            // noteSendConnection.on("shutdown", () => {
+            // this.noteSendConnection.on("shutdown", () => {
             //     this.log("Note send stream shutdown!");
             //     this.noteSendConnection = null;
             // });
@@ -310,6 +347,32 @@ export class VstWeb {
         }
     }
 
+    /**
+     * Save the state of the VM. This will return an object containing the state of the VM and the connections (audio stream and note send connection). You can use this object to restore the state of the VM later using the loadStateFromObj() method.
+     * @returns {Promise<object>} The object containing the state (obj.state) and the connections (this.audioStream + this.noteSendConnection)
+     */
+    async saveState() {
+        const state = await this.vm.save_state();
+        const finalObj = {
+            state: state,
+            mac: this.format_mac(this.vm.network_adapter.vm_mac),
+        }
+        return finalObj;
+    }
+
+    /**
+     * Load the state of the VM from an object. This is the object returned by the saveState() method. This will restore the state of the VM and the connections (audio stream and note send connection).
+     * @param {object} stateObj The object containing the state (obj.state) and the connections (obj.connections) to restore. This should be the object returned by the saveState() method.
+     * @param {class} streamable A class that extends the Streamable class, used to stream the audio data from the VM to the browser. By default, it uses the PlayAudioStreamable class, which plays the audio directly in the browser. See the Streamable class for more details
+     */
+    async loadStateFromObj(stateObj, streamable = PlayAudioStreamable) {
+        await this.vm.restore_state(stateObj.state);
+
+        this.vm.v86.cpu.devices.virtio_net.bus.send("net0-mac", stateObj.mac); // Set the MAC address to the one in the state object, otherwise the networking won't work, because all vm-out requests are blocked until the MAC address is the same as the one in the state
+        this.vm.keyboard_send_text(this.TIME_SYNC_COMMAND); // Sync the time, otherwise the Sleep function function in the plugin... straight up doesn't work
+        await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait a little bit for the time sync to take effect
+        await this.startNetworking(streamable);
+    }
 
     /**
      * Load a VST plugin into the VM. This will extract the plugin files from a ZIP archive and place them in the VM's filesystem.
@@ -317,9 +380,10 @@ export class VstWeb {
      * @param {ArrayBuffer} archive A ZIP archive containing the VST plugin files. 
      * @param {string} pluginPath The path to the plugin's .dll file inside the archive (e.g. "MyPlugin/MyPlugin.dll").
      * @param {class} streamable A class that extends the Streamable class, used to stream the audio data from the VM to the browser. By default, it uses the PlayAudioStreamable class, which plays the audio directly in the browser. See the Streamable class for more details
-     * @returns 
+     * @param {boolean} saveState Whether to save the state after loading the plugin (THIS WILL *NOT* CALL Networking, SO you'll need to **MANUALLY** call loadState for it to work)
+     * @returns {Promise<object|void>} If saveState is true, it will return the state object that can be used to restore the state later. Otherwise, it will return void.
      */
-    async loadVSTPlugin(archive, pluginPath, streamable = PlayAudioStreamable) {
+    async loadVSTPlugin(archive, pluginPath, streamable = PlayAudioStreamable, saveState = false) {
         const zip = await JSZip.loadAsync(archive);
         if (this.vm.fs9p.SearchPath("/root/vsts").id === -1) {
             this.log("Creating /root/vsts directory in vm filesystem");
@@ -349,13 +413,7 @@ export class VstWeb {
             }
         }
 
-        const ipString = [];
-
-        for (const hex of this.vm.network_adapter.vm_mac) {
-            ipString.push(hex.toString(16));
-        }
-
-        const command = this.VST_SCRIPT.replace("::PLUGIN_PATH::", `./vsts/${pluginPath}`).replace("::MAC_ADDR::", ipString.join(":"));
+        const command = this.VST_SCRIPT.replace("::PLUGIN_PATH::", `./vsts/${pluginPath}`).replace("::MAC_ADDR::", this.format_mac(this.vm.network_adapter.vm_mac));
         this.log(`Executing command in VM: ${command}`);
         this.vm.keyboard_send_text(command + "\n");
         let isProcessed = false;
@@ -365,6 +423,9 @@ export class VstWeb {
             } else {
                 await new Promise(resolve => setTimeout(resolve, 50));
             }
+        }
+        if (saveState) {
+            return await this.saveState(); // Return the state
         }
         await this.startNetworking(streamable);
         this.log("Plugin loaded successfully!");
@@ -382,13 +443,9 @@ export class VstWeb {
         }
         this.isWaiting = true;
         this.noteSendConnection.write(new TextEncoder().encode(`!:${delay}\n`)); // !:1000 = wait for 1000ms
-        const startTime = performance.now();
+        // const startTime = performance.now();
         while (this.isWaiting) {
-            await new Promise(resolve => setTimeout(resolve, 10));
-            if (performance.now() - startTime > delay) {
-                this.log("Wait timeout reached, breaking wait");
-                break;
-            }
+            await new Promise(resolve => setTimeout(resolve, 50));
         }
     }
 
@@ -403,6 +460,22 @@ export class VstWeb {
         const sampleRate = this.REMOTE_SCRIPT_AUDIO_SETTINGS.sampleRate;
         const wavData = this.encodeWav(audioData, channels, sampleRate);
         return wavData;
+    }
+    // https://github.com/copy/v86/blob/master/src/ne2k.js#L236
+    /**
+     * Format a MAC address from an array of 6 bytes to a string format (e.g. "00:11:22:33:44:55").
+     * @param {string[]} mac Array of 6 bytes representing the MAC address (e.g. [0, 17, 34, 51, 68, 85])
+     * @returns {string} The formatted MAC address (e.g. "00:11:22:33:44:55")
+     */
+    format_mac(mac) {
+        return [
+            mac[0].toString(16).padStart(2, "0"),
+            mac[1].toString(16).padStart(2, "0"),
+            mac[2].toString(16).padStart(2, "0"),
+            mac[3].toString(16).padStart(2, "0"),
+            mac[4].toString(16).padStart(2, "0"),
+            mac[5].toString(16).padStart(2, "0"),
+        ].join(":");
     }
 
     // Found idk where

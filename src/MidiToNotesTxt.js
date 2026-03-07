@@ -1,6 +1,7 @@
 import { MIDIFile } from '../lib/MIDIFile.js';
 
 /**
+ * @deprecated Plz don't use this anymore, it's really buggy and it sucks
  * Convert a MID file (as ArrayBuffer) to a text format for VstWeb !! THE TIMING IS OFF, I HAVE NO IDEA WHY, BUT IT'S ALWAYS TOO FAST, SO I MULTIPLY IT BY 2, IF YOU KNOW WHY PLEASE TELL ME
  * @param {ArrayBuffer} midiArrayBuffer 
  * @returns {string} The notes text
